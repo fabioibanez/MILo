@@ -207,3 +207,12 @@ dmypy.json
 # Pyre type checker
 .pyre/
 learnableearthparser/fast_sampler/_sampler.c
+
+
+# Ignore all data files and directories to prevent committing any data
+data/
+*.data
+milo/data/
+**/data/
+**/*.data
+.DS_Store

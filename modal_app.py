@@ -24,6 +24,7 @@ REMOTE_REPO = "/root/MILo"
 # Build for common datacenter GPUs so the cached image works across GPU types.
 # 7.5=T4, 8.0=A100, 8.6=A10G/3090, 8.9=L4/L40S/4090, 9.0=H100
 TORCH_CUDA_ARCH_LIST = "7.5;8.0;8.6;8.9;9.0"
+CMAKE_CUDA_ARCHITECTURES = "75;80;86;89;90"
 
 app = modal.App(APP_NAME)
 
@@ -33,7 +34,7 @@ output_volume = modal.Volume.from_name("milo-outputs", create_if_missing=True)
 image = (
     modal.Image.from_registry(
         "nvidia/cuda:11.8.0-devel-ubuntu22.04",
-        add_python="3.9",
+        add_python="3.10",
     )
     .apt_install(
         "git",
@@ -63,35 +64,60 @@ image = (
         "plyfile==1.1",
         "tqdm==4.67.1",
         "ninja",
+        "setuptools",
+        "wheel",
     )
     .env(
         {
             "CUDA_HOME": "/usr/local/cuda",
             "TORCH_CUDA_ARCH_LIST": TORCH_CUDA_ARCH_LIST,
             "FORCE_CUDA": "1",
+            "CC": "gcc",
+            "CXX": "g++",
+            # Make cuda_runtime.h visible to C++ compilations (mirrors MILo's install.py).
+            "CPATH": "/usr/local/cuda/include",
+            "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
+            "PATH": "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         }
     )
+    # Bake submodules into the image so build-cache is only busted when *they*
+    # change (essentially never after `git submodule update --init`).
+    .add_local_dir(
+        "./submodules",
+        remote_path=f"{REMOTE_REPO}/submodules",
+        copy=True,
+        ignore=[".git/**", "**/__pycache__/**", "**/*.pyc"],
+    )
+    .run_commands(
+        f"cd {REMOTE_REPO} && pip install --no-build-isolation submodules/diff-gaussian-rasterization_ms",
+        f"cd {REMOTE_REPO} && pip install --no-build-isolation submodules/diff-gaussian-rasterization",
+        f"cd {REMOTE_REPO} && pip install --no-build-isolation submodules/diff-gaussian-rasterization_gof",
+        f"cd {REMOTE_REPO} && pip install --no-build-isolation submodules/simple-knn",
+        f"cd {REMOTE_REPO} && pip install --no-build-isolation submodules/fused-ssim",
+        (
+            f"cd {REMOTE_REPO}/submodules/tetra_triangulation && "
+            f"cmake . -DCMAKE_CUDA_ARCHITECTURES='{CMAKE_CUDA_ARCHITECTURES}' && "
+            f"make -j && pip install --no-build-isolation -e ."
+        ),
+        f"cd {REMOTE_REPO}/submodules/nvdiffrast && pip install --no-build-isolation -e .",
+    )
+    # Mount the rest of the repo at *runtime*. `copy=False` (default) means this
+    # is not part of the image hash, so editing milo/*.py never triggers a rebuild.
+    # Exclude submodules/ because the editable installs (nvdiffrast,
+    # tetra_triangulation) need the *baked* paths, not the mounted ones.
     .add_local_dir(
         ".",
         remote_path=REMOTE_REPO,
-        copy=True,
         ignore=[
+            "submodules/**",
             ".git/**",
             "milo/data/**",
             "milo/output/**",
             "**/__pycache__/**",
             "**/*.pyc",
             "modal_app.py",
+            "run_modal.sh",
         ],
-    )
-    .run_commands(
-        f"cd {REMOTE_REPO} && pip install submodules/diff-gaussian-rasterization_ms",
-        f"cd {REMOTE_REPO} && pip install submodules/diff-gaussian-rasterization",
-        f"cd {REMOTE_REPO} && pip install submodules/diff-gaussian-rasterization_gof",
-        f"cd {REMOTE_REPO} && pip install submodules/simple-knn",
-        f"cd {REMOTE_REPO} && pip install submodules/fused-ssim",
-        f"cd {REMOTE_REPO}/submodules/tetra_triangulation && cmake . && make -j && pip install -e .",
-        f"cd {REMOTE_REPO}/submodules/nvdiffrast && pip install -e .",
     )
 )
 
