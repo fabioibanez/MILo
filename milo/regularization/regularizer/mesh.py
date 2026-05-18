@@ -419,6 +419,8 @@ def compute_mesh_regularization(
             flatten_voronoi_features(current_occupancy)
         )  # (N_voronoi_points, )
 
+        # TODO(Chris & Fabio): compute regularization loss w.r.t. the sdf and that should flow back to the gaussian
+
         # --- Marching Tetrahedra ---
         verts_list, scale_list, faces_list, _ = marching_tetrahedra(
             vertices=voronoi_points[None],
