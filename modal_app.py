@@ -49,6 +49,10 @@ image = (
         "libgl1",
         "libglib2.0-0",
         "libegl1",
+        # Dev headers for nvdiffrast's JIT-compiled GL plugin
+        "libegl1-mesa-dev",
+        "libgles2-mesa-dev",
+        "libglvnd-dev",
     )
     .uv_pip_install(
         "torch==2.3.1",
@@ -74,14 +78,11 @@ image = (
             "FORCE_CUDA": "1",
             "CC": "gcc",
             "CXX": "g++",
-            # Make cuda_runtime.h visible to C++ compilations (mirrors MILo's install.py).
             "CPATH": "/usr/local/cuda/include",
             "LD_LIBRARY_PATH": "/usr/local/cuda/lib64",
             "PATH": "/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         }
     )
-    # Bake submodules into the image so build-cache is only busted when *they*
-    # change (essentially never after `git submodule update --init`).
     .add_local_dir(
         "./submodules",
         remote_path=f"{REMOTE_REPO}/submodules",
@@ -89,6 +90,15 @@ image = (
         ignore=[".git/**", "**/__pycache__/**", "**/*.pyc"],
     )
     .run_commands(
+        # Patch nvdiffrast ops.py: capture cpp_extension.load()'s return value
+        # instead of relying on importlib.import_module (defensive; idempotent).
+        (
+            f"sed -i 's|^\\(\\s*\\)torch\\.utils\\.cpp_extension\\.load(name=plugin_name|"
+            f"\\1_cached_plugin[gl] = torch.utils.cpp_extension.load(name=plugin_name|' "
+            f"{REMOTE_REPO}/submodules/nvdiffrast/nvdiffrast/torch/ops.py && "
+            f"sed -i '/_cached_plugin\\[gl\\] = importlib\\.import_module(plugin_name)/d' "
+            f"{REMOTE_REPO}/submodules/nvdiffrast/nvdiffrast/torch/ops.py"
+        ),
         f"cd {REMOTE_REPO} && pip install --no-build-isolation submodules/diff-gaussian-rasterization_ms",
         f"cd {REMOTE_REPO} && pip install --no-build-isolation submodules/diff-gaussian-rasterization",
         f"cd {REMOTE_REPO} && pip install --no-build-isolation submodules/diff-gaussian-rasterization_gof",
@@ -100,12 +110,7 @@ image = (
             f"make -j && pip install --no-build-isolation -e ."
         ),
         f"cd {REMOTE_REPO}/submodules/nvdiffrast && pip install --no-build-isolation -e .",
-        f"cd {REMOTE_REPO}/submodules/TopologyLayer && pip install --no-build-isolation -e .",
     )
-    # Mount the rest of the repo at *runtime*. `copy=False` (default) means this
-    # is not part of the image hash, so editing milo/*.py never triggers a rebuild.
-    # Exclude submodules/ because the editable installs (nvdiffrast,
-    # tetra_triangulation) need the *baked* paths, not the mounted ones.
     .add_local_dir(
         ".",
         remote_path=REMOTE_REPO,
