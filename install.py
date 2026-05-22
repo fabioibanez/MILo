@@ -57,6 +57,12 @@ if __name__ == '__main__':
     os.system(f"pip install -e .")
     os.chdir("../../")
     print("[INFO] Nvdiffrast installed.")
+
+    print('[INFO] Installing TopologyLayer')
+    os.chdir('submodules/TopologyLayer')
+    os.system('pip install -e .')
+    os.chdir("../../")
+    print("[INFO] TopologyLayer installed.")
     
     print(f"[INFO] Installation complete.")
     

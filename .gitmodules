@@ -4,3 +4,9 @@
 [submodule "submodules/nvdiffrast"]
 	path = submodules/nvdiffrast
 	url = git@github.com:NVlabs/nvdiffrast.git
+[submodule "TopologyLayer"]
+	path = submodules/TopologyLayer
+	url = git@github.com:stanulet27/TopologyLayer.git
+[submodule "submodules/TopologyLayer"]
+	path = submodules/TopologyLayer
+	url = git@github.com:stanulet27/TopologyLayer.git

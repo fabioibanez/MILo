@@ -100,6 +100,7 @@ image = (
             f"make -j && pip install --no-build-isolation -e ."
         ),
         f"cd {REMOTE_REPO}/submodules/nvdiffrast && pip install --no-build-isolation -e .",
+        f"cd {REMOTE_REPO}/submodules/TopologyLayer && pip install --no-build-isolation -e .",
     )
     # Mount the rest of the repo at *runtime*. `copy=False` (default) means this
     # is not part of the image hash, so editing milo/*.py never triggers a rebuild.
