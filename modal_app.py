@@ -141,7 +141,7 @@ def _run(cmd: str) -> None:
 
 @app.function(
     image=image,
-    gpu="A100-40GB",
+    gpu="A10",
     volumes=VOLUMES,
     timeout=6 * 60 * 60,
 )
@@ -160,7 +160,7 @@ def train(
 
 @app.function(
     image=image,
-    gpu="A100-40GB",
+    gpu="A10",
     volumes=VOLUMES,
     timeout=2 * 60 * 60,
 )

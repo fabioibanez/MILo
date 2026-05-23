@@ -190,10 +190,10 @@ class MeshRasterizer(torch.nn.Module):
             )
             self.cameras = cameras
         
-        if use_opengl:
-            self.gl_context = dr.RasterizeGLContext()
-        else:
-            self.gl_context = dr.RasterizeCudaContext()
+        # if use_opengl:
+        #     self.gl_context = dr.RasterizeGLContext()
+        # else:
+        self.gl_context = dr.RasterizeCudaContext()
             
     def forward(
         self, 
