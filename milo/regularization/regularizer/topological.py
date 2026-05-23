@@ -38,10 +38,13 @@ class LevelSetLayer3D(LevelSetLayer):
         tmpcomplex = init_complex(tets, n_verts)
         super(LevelSetLayer3D, self).__init__(tmpcomplex, maxdim=maxdim, sublevel=sublevel)
 
+    def rebuild(tets,n_verts):
+        self.complex = init_complex(tets, n_verts)
 
-class TopLoss3d(nn.Module):
+
+class TopLoss3D(nn.Module):
     def __init__(self, tets, n_verts,b0,b1,b2):
-        super(TopLoss3d, self).__init__()
+        super(TopLoss3D, self).__init__()
         self.pdfn = LevelSetLayer3D(tets,n_verts, sublevel=True)
         assert b0 > 0, 'there must be at least one connected component in the target'
         self.topfn = PartialSumBarcodeLengths(dim=0, skip=b0)
