@@ -40,13 +40,25 @@ class LevelSetLayer3D(LevelSetLayer):
 
 
 class TopLoss3d(nn.Module):
-    def __init__(self, size,b0,b1,b2):
+    def __init__(self, tets, n_verts,b0,b1,b2):
         super(TopLoss3d, self).__init__()
-        self.pdfn = LevelSetLayer3D(size=size,  sublevel=False)
-        self.topfn = SumBarcodeLengths(dim=0) if b0==0 else PartialSumBarcodeLengths(dim=0, skip=b0)
-        self.topfn1 = SumBarcodeLengths(dim=1) if b1==0 else PartialSumBarcodeLengths(dim=1, skip=b1)
-        self.topfn2 = SumBarcodeLengths(dim=2) if b2==0 else PartialSumBarcodeLengths(dim=2, skip=b2)
+        self.pdfn = LevelSetLayer3D(tets,n_verts, sublevel=True)
+        assert b0 > 0, 'there must be at least one connected component in the target'
+        self.topfn = PartialSumBarcodeLengths(dim=0, skip=b0)
+        self.topfn1 = PartialSumBarcodeLengths(dim=1, skip=b1)
+        self.topfn2 = PartialSumBarcodeLengths(dim=2, skip=b2)
 
     def forward(self, beta):
         dgminfo = self.pdfn(beta)
         return self.topfn(dgminfo) + self.topfn1(dgminfo) + self.topfn2(dgminfo)
+    
+class CCLoss(nn.Module):
+    def __init__(self, tets,n_verts):
+        super(CCLoss, self).__init__()        
+        self.pdfn = LevelSetLayer3D(tets,n_verts, maxdim=0, sublevel=True)
+        self.topfn = PartialSumBarcodeLengths(dim=0, skip=1)
+    
+    def forward(self,beta):
+        dgminfo = self.pdfn(beta)
+        return self.topfn(dgminfo)
+
