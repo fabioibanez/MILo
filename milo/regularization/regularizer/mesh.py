@@ -1,6 +1,7 @@
 from typing import Callable, Dict, Any, Tuple
 from functools import partial
 import gc
+import time
 import numpy as np
 import torch
 from arguments import PipelineParams
@@ -13,6 +14,7 @@ from utils.tetmesh import marching_tetrahedra
 from utils.camera_utils import get_cameras_spatial_extent
 from utils.geometry_utils import is_in_view_frustum
 from utils.geometry_utils import depth_to_normal as depth_double_to_normal
+from regularization.regularizer.topological import CCLoss, TopLoss3D, DTU_test
 from regularization.sdf.integration import (
     evaluate_cull_sdf_values,
 )
@@ -76,6 +78,7 @@ def initialize_mesh_regularization(
         "surface_delaunay_xyz_idx": None,
         "reset_delaunay_samples": True,
         "reset_sdf_values": True,
+        "cc_loss": None,
     }
 
     return mesh_renderer, mesh_state
@@ -318,13 +321,65 @@ def compute_mesh_regularization(
                 delaunay_tets = cpp.triangulate(voronoi_points.detach()).cuda().long()
             torch.cuda.empty_cache()
 
-        # --- Compute SDF values ---
-        # Check if an SDF reset has to be enforced because of a shape mismatch
-        if not reset_sdf_values:
-            n_voronoi_sdf = voronoi_points.shape[0]
-            if n_voronoi_sdf != voronoi_points.shape[0]:
-                print(f"[WARNING] Delaunay SDFs ({n_voronoi_sdf}) and points ({voronoi_points.shape[0]}) count mismatch. Resetting SDFs.")
-                reset_sdf_values = True
+            if config.get('use_topo_loss', False):
+                K = config.get('topo_n_points', 50000)
+                n_voronoi = voronoi_points.shape[0]
+
+                # Foreground filter
+                topo_radius_factor = config.get('topo_radius_factor', None)
+                if topo_radius_factor is not None and topo_radius_factor > 0.0:
+                    with torch.no_grad():
+                        topo_center = voronoi_points.detach().median(dim=0).values.view(1, 3)
+                        distances = (voronoi_points.detach() - topo_center).norm(dim=-1)
+                        keep_fraction = float(min(max(topo_radius_factor, 0.0), 1.0))
+                        topo_radius = float(distances.quantile(keep_fraction))
+                        in_bbox_mask = distances <= topo_radius
+                        candidate_idx = torch.where(in_bbox_mask)[0]
+                    if candidate_idx.numel() < 64:
+                        print(f"[WARNING] Topo bbox filter left only {candidate_idx.numel()} candidates...")
+                        candidate_idx = torch.arange(n_voronoi, device='cuda', dtype=torch.long)
+                    else:
+                        print(f"[INFO] Topo bbox filter: {candidate_idx.numel()}/{n_voronoi}...")
+                else:
+                    candidate_idx = torch.arange(n_voronoi, device='cuda', dtype=torch.long)
+
+                # Sample K from candidates — runs regardless of which bbox branch
+                n_candidates = candidate_idx.shape[0]
+                if n_candidates > K:
+                    if config.get('topo_sampling_method', 'random') == 'surface':
+                        k_gauss = max(1, K // 9)
+                        parent_gauss = (candidate_idx // 9).unique()
+                        n_parent = parent_gauss.numel()
+                        if n_parent > k_gauss:
+                            sub = torch.randperm(n_parent, device='cuda')[:k_gauss]
+                            chosen_gauss = parent_gauss[sub]
+                        else:
+                            chosen_gauss = parent_gauss
+                        offsets = torch.arange(9, device='cuda', dtype=torch.long)
+                        topo_sample_idx = (chosen_gauss.view(-1, 1) * 9 + offsets.view(1, -1)).view(-1)
+                        topo_sample_idx, _ = torch.sort(topo_sample_idx)
+                    else:
+                        perm = torch.randperm(n_candidates, device='cuda')[:K]
+                        topo_sample_idx, _ = torch.sort(candidate_idx[perm])
+                else:
+                    topo_sample_idx, _ = torch.sort(candidate_idx)
+
+                # Build sub-Delaunay and CCLoss — runs regardless of which bbox branch
+                with torch.no_grad():
+                    topo_points = voronoi_points[topo_sample_idx].detach().contiguous()
+                    topo_tets = cpp.triangulate(topo_points).cuda().long()
+
+                mesh_state['topo_sample_idx'] = topo_sample_idx
+                mesh_state['cc_loss'] = CCLoss(topo_tets, topo_points.shape[0]).cuda()
+                torch.cuda.empty_cache()
+
+                # --- Compute SDF values ---
+                # Check if an SDF reset has to be enforced because of a shape mismatch
+                if not reset_sdf_values:
+                    n_voronoi_sdf = voronoi_points.shape[0]
+                    if n_voronoi_sdf != voronoi_points.shape[0]:
+                        print(f"[WARNING] Delaunay SDFs ({n_voronoi_sdf}) and points ({voronoi_points.shape[0]}) count mismatch. Resetting SDFs.")
+                        reset_sdf_values = True
         
         if reset_sdf_values:
             with torch.no_grad():
@@ -420,6 +475,20 @@ def compute_mesh_regularization(
         )  # (N_voronoi_points, )
 
         # TODO(Chris & Fabio): compute regularization loss w.r.t. the sdf and that should flow back to the gaussian
+        if (
+            config.get("use_topo_loss", False)
+            and iteration >= config.get("topo_start_iter", config["start_iter"])
+            and (iteration % config.get("topo_interval", 50) == 0)
+            and mesh_state["cc_loss"] is not None
+        ):
+            print('losssss')
+            t = time.time()
+            topo_loss = config["topo_weight"] * mesh_state["cc_loss"](
+                current_voronoi_sdf[mesh_state["topo_sample_idx"]]
+            )
+            print('forward', time.time()-t, 'loss', topo_loss)
+        else:
+            topo_loss = torch.zeros(size=(), device=gaussians._xyz.device)
 
         # --- Marching Tetrahedra ---
         verts_list, scale_list, faces_list, _ = marching_tetrahedra(
@@ -594,6 +663,7 @@ def compute_mesh_regularization(
         + mesh_normal_loss 
         + occupied_centers_loss 
         + occupancy_labels_loss
+        + topo_loss
     )
     
     # --- Update State ---
@@ -613,6 +683,7 @@ def compute_mesh_regularization(
         "mesh_normal_loss": mesh_normal_loss.detach(),
         "occupied_centers_loss": occupied_centers_loss.detach(),
         "occupancy_labels_loss": occupancy_labels_loss.detach(),
+        'topo_loss': topo_loss.detach(),
         "updated_state": mesh_state,
         "mesh_render_pkg": {
             "depth": mesh_depth,

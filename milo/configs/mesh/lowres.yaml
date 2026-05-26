@@ -1,7 +1,16 @@
 # Regularization schedule
 start_iter: 8_001
-mesh_update_interval: 1 
+mesh_update_interval: 5
 stop_iter: 18000
+
+topo_radius_factor: 0.75     # fraction of cam radius; lower = tighter foreground
+topo_n_points: 50_000
+topo_sampling_method: "random"  # or "surface"
+
+use_topo_loss: True
+topo_weight: 0.005
+topo_interval: 50
+topo_start_iter: 10_001
 
 # Depth loss weight
 use_depth_loss: true

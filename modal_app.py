@@ -110,6 +110,7 @@ image = (
             f"make -j && pip install --no-build-isolation -e ."
         ),
         f"cd {REMOTE_REPO}/submodules/nvdiffrast && pip install --no-build-isolation -e .",
+        f"cd {REMOTE_REPO}/submodules/TopologyLayer && pip install --no-build-isolation ."
     )
     .add_local_dir(
         ".",
@@ -141,7 +142,8 @@ def _run(cmd: str) -> None:
 
 @app.function(
     image=image,
-    gpu="A10",
+    gpu="L40S",
+    cpu=8.0, 
     volumes=VOLUMES,
     timeout=6 * 60 * 60,
 )
@@ -160,7 +162,8 @@ def train(
 
 @app.function(
     image=image,
-    gpu="A10",
+    gpu="L40S",
+    cpu=8.0, 
     volumes=VOLUMES,
     timeout=2 * 60 * 60,
 )
@@ -206,7 +209,6 @@ def upload_scene(local_path: str) -> None:
     print(f"Uploading {len(files)} files from {root} as scene '{root.name}'...")
     _upload_scene_remote.remote(root.name, files)
 
-
 @app.local_entrypoint()
 def main(
     scene: str = "Ignatius",
@@ -219,3 +221,278 @@ def main(
     train.remote(scene, imp_metric, rasterizer, extra_args)
     if extract:
         extract_mesh.remote(scene, rasterizer, method)
+
+# ============================================================================
+# Sweep experiment: topology loss vs. Gaussian budget
+# ============================================================================
+
+@app.function(
+    image=image,
+    gpu="L40S",
+    cpu=8.0,
+    memory=32768,
+    volumes=VOLUMES,
+    timeout=6 * 60 * 60,  # 2 hr per cell (lowres should be 15-25 min)
+)
+def train_dtu_sweep_cell(
+    scene: str,
+    run_name: str,
+    sampling_factor: float = 1.0,
+    use_topo_loss: bool = False,
+    topo_weight: float = 0.005,
+    mesh_config: str = "lowres",
+) -> dict:
+    """Train + extract + collect metrics for one sweep cell."""
+    output_dir = f"./output/sweep/{scene}/{run_name}"
+
+    # --- Train ---
+    train_cmd = (
+        f"python train.py "                                  # was: train_regular_densification.py
+        f"-s ./data/{scene} -m {output_dir} -r 2 "
+        f"--rasterizer radegs --imp_metric indoor "
+        f"--mesh_config {mesh_config} --decoupled_appearance "
+        f"--sampling_factor {sampling_factor} "
+        f"--log_interval 500"
+    )
+    if use_topo_loss:
+        train_cmd += f" --use_topo_loss --topo_weight {topo_weight}"
+    _run(train_cmd)
+
+    # --- Extract mesh ---
+    _run(
+        f"python mesh_extract_sdf.py "
+        f"-s ./data/{scene} -m {output_dir} "
+        f"--iteration 18000 --refine_iter 0 "
+        f"--rasterizer radegs --config {mesh_config} --imp_metric indoor "
+        f"--remove_oof_vertices"
+    )
+
+    # --- Collect metrics ---
+    metrics = _collect_sweep_metrics(f"{REMOTE_REPO}/milo/{output_dir.lstrip('./')}")
+    metrics["run_name"] = run_name
+    metrics["sampling_factor"] = sampling_factor
+    metrics["use_topo_loss"] = use_topo_loss
+    metrics["topo_weight"] = topo_weight if use_topo_loss else 0.0
+
+    output_volume.commit()
+    return metrics
+
+
+def _collect_sweep_metrics(output_dir: str) -> dict:
+    """Read final checkpoint + mesh and compute headline metrics."""
+    from pathlib import Path
+    import trimesh
+    from plyfile import PlyData
+
+    out = Path(output_dir)
+    metrics = {"output_dir": str(out)}
+
+    # Gaussian count from the final point cloud
+    pc_dirs = sorted(
+        (out / "point_cloud").glob("iteration_*"),
+        key=lambda p: int(p.name.split("_")[1]),
+    )
+    if pc_dirs:
+        final_pc = pc_dirs[-1] / "point_cloud.ply"
+        if final_pc.exists():
+            ply = PlyData.read(str(final_pc))
+            metrics["gaussian_count"] = len(ply["vertex"].data)
+        else:
+            metrics["gaussian_count"] = None
+    else:
+        metrics["gaussian_count"] = None
+
+    # Mesh stats — pick the extracted mesh
+    mesh_candidates = list(out.glob("mesh_*.ply"))
+    if mesh_candidates:
+        # Prefer the post-processed one if it exists, else the first match
+        mesh_path = next(
+            (m for m in mesh_candidates if "post" in m.name.lower()),
+            mesh_candidates[0],
+        )
+        mesh = trimesh.load(str(mesh_path), process=False)
+        metrics["mesh_path"] = str(mesh_path)
+        metrics["n_vertices"] = int(mesh.vertices.shape[0])
+        metrics["n_faces"] = int(mesh.faces.shape[0])
+        metrics["mesh_size_mb"] = mesh_path.stat().st_size / (1024 * 1024)
+
+        # Connected components — the headline metric for CCLoss
+        components = mesh.split(only_watertight=False)
+        metrics["n_components"] = len(components)
+        # Floater fraction: components much smaller than the largest
+        if components:
+            sizes = sorted((c.vertices.shape[0] for c in components), reverse=True)
+            metrics["largest_component_frac"] = sizes[0] / sum(sizes)
+            metrics["n_components_over_100v"] = sum(s > 100 for s in sizes)
+    else:
+        metrics["n_vertices"] = None
+        metrics["n_components"] = None
+
+    return metrics
+
+
+@app.local_entrypoint()
+def sweep(
+    scene: str = "scan65",
+    parallel: bool = True,
+    mesh_config: str = "lowres",
+    topo_weight: float = 0.005,
+) -> None:
+    """
+    Run the 2x4 sweep: sampling_factor x {no topo, topo} on one DTU scene.
+
+    Usage:
+        modal run modal_app.py::sweep --scene scan24
+        modal run modal_app.py::sweep --scene scan24 --no-parallel  # serialize
+    """
+    import json
+
+    sampling_factors = [0.1, 0.2, 0.4, 1.0]
+    cells = []
+    for sf in sampling_factors:
+        for topo in [False, True]:
+            tag = "topo" if topo else "notopo"
+            cells.append(
+                dict(
+                    scene=scene,
+                    run_name=f"sf{sf}_{tag}",
+                    sampling_factor=sf,
+                    use_topo_loss=topo,
+                    topo_weight=topo_weight,
+                    mesh_config=mesh_config,
+                )
+            )
+
+    print(f"[sweep] {len(cells)} cells on scene={scene} mesh_config={mesh_config}")
+    print(f"[sweep] mode: {'parallel' if parallel else 'sequential'}\n")
+
+    if parallel:
+        handles = [train_dtu_sweep_cell.spawn(**c) for c in cells]
+        results = []
+        for c, h in zip(cells, handles):
+            try:
+                results.append(h.get())
+            except Exception as e:
+                print(f"[sweep] cell {c['run_name']} FAILED: {e}")
+                results.append({**c, "error": str(e)})
+    else:
+        results = []
+        for c in cells:
+            try:
+                results.append(train_dtu_sweep_cell.remote(**c))
+            except Exception as e:
+                print(f"[sweep] cell {c['run_name']} FAILED: {e}")
+                results.append({**c, "error": str(e)})
+
+    # --- Save raw results ---
+    Path = __import__("pathlib").Path
+    out_dir = Path(f"./milo/output/sweep/{scene}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "sweep_results.json", "w") as f:
+        json.dump(results, f, indent=2)
+
+    # --- Print summary table ---
+    _print_summary(results)
+
+
+def _print_summary(results: list) -> None:
+    """Print a markdown-ish table of the sweep results."""
+    cols = ["run_name", "gaussian_count", "n_vertices", "n_components",
+            "n_components_over_100v", "largest_component_frac", "mesh_size_mb"]
+    widths = {c: max(len(c), 14) for c in cols}
+
+    header = " | ".join(c.ljust(widths[c]) for c in cols)
+    sep = "-+-".join("-" * widths[c] for c in cols)
+    print("\n" + header)
+    print(sep)
+
+    for r in sorted(results, key=lambda x: (x.get("sampling_factor", 0), x.get("use_topo_loss", False))):
+        if "error" in r:
+            print(f"{r.get('run_name','?').ljust(widths['run_name'])} | FAILED: {r['error']}")
+            continue
+        row = []
+        for c in cols:
+            v = r.get(c, "—")
+            if isinstance(v, float):
+                v = f"{v:.3f}" if v < 100 else f"{v:.1f}"
+            row.append(str(v).ljust(widths[c]))
+        print(" | ".join(row))
+    print()
+
+# Add temporarily at the bottom of modal_app.py:
+@app.local_entrypoint()
+def sweep_test() -> None:
+    result = train_dtu_sweep_cell.remote(
+        scene="scan65",
+        run_name="test_one",
+        sampling_factor=0.10,
+        use_topo_loss=True,
+        mesh_config="lowres",
+        topo_weight= 0.005
+    )
+    print(result)
+
+@app.function(
+    image=image,
+    gpu="L40S",
+    cpu=4.0,
+    memory=16384,
+    volumes=VOLUMES,
+    timeout=30 * 60,
+)
+def extract_sdf(
+    scene: str,
+    model_dir: str = "",
+    iteration: int = 18000,
+    refine_iter: int = 0,
+    rasterizer: str = "radegs",
+    config: str = "lowres",
+    imp_metric: str = "indoor",
+) -> None:
+    """Extract a mesh from a trained checkpoint using learned SDF values.
+
+    Pass --refine-iter 0 to skip the refinement loop (recommended when validating
+    topology-loss effects, since the default 1000-iter refinement has no topo loss
+    and can undo cleanup).
+
+    Example:
+        modal run modal_app.py::extract_sdf --scene scan24 --model-dir scan24_topo
+        modal run modal_app.py::extract_sdf --scene scan24 --model-dir scan24_out --refine-iter 0
+    """
+    if not model_dir:
+        model_dir = f"{scene}_out"
+    output_dir = f"./output/{model_dir}"
+
+    _run(
+        f"python mesh_extract_sdf.py --remove_oof_vertices --use_topo_loss "
+        f"-s ./data/{scene} -m {output_dir} "
+        f"--iteration {iteration} "
+        f"--refine_iter {refine_iter} "
+        f"--rasterizer {rasterizer} "
+        f"--config {config} "
+        f"--imp_metric {imp_metric}"
+    )
+    output_volume.commit()
+    print(f"[extract_sdf] mesh written to {output_dir}/mesh_learnable_sdf.ply")
+
+
+@app.local_entrypoint()
+def extract(
+    scene: str = "scan65",
+    model_dir: str = "",
+    iteration: int = 18000,
+    refine_iter: int = 1000,
+    rasterizer: str = "radegs",
+    config: str = "lowres",
+    imp_metric: str = "indoor",
+) -> None:
+    """Local entrypoint wrapping extract_sdf."""
+    extract_sdf.remote(
+        scene=scene,
+        model_dir=model_dir,
+        iteration=iteration,
+        refine_iter=refine_iter,
+        rasterizer=rasterizer,
+        config=config,
+        imp_metric=imp_metric,
+    )

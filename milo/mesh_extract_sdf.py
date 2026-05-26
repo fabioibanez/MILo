@@ -14,6 +14,7 @@ import trimesh
 from tetranerf.utils.extension import cpp
 from utils.tetmesh import marching_tetrahedra
 from utils.camera_utils import get_cameras_spatial_extent
+from regularization.regularizer.topological import DTU_test, CCLoss, TopLoss3D
 
 from scene.mesh import MeshRasterizer, MeshRenderer, ScalableMeshRenderer, Meshes
 
@@ -210,7 +211,7 @@ def extract_mesh_with_sdf_refinement(
     progress_bar = tqdm(range(refine_iter + 1), desc="Training progress")
     
     occupancy_labels, vert_colors = None, None
-
+    dtu_top_loss = CCLoss(delaunay_tets, voronoi_points.shape[0]).cuda() if args.use_topo_loss else None
     for iteration in range(refine_iter + 1):
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras_warn_up(18000, 3000, scale=1.0, scale2=2.0).copy()
@@ -248,7 +249,10 @@ def extract_mesh_with_sdf_refinement(
         current_voronoi_sdf = convert_occupancy_to_sdf(
                 flatten_voronoi_features(current_occupancy)
             )  # (N_voronoi_points, )
-        
+        if args.use_topo_loss:
+            topo_loss = args.topo_weight * dtu_top_loss(current_voronoi_sdf) 
+        else:
+            topo_loss = torch.zeros(())
         # Differentiable Marching Tetrahedra
         verts_list, scale_list, faces_list, _ = marching_tetrahedra(
             vertices=voronoi_points[None],
@@ -415,6 +419,7 @@ def extract_mesh_with_sdf_refinement(
             + mesh_normal_loss 
             + occupied_centers_loss 
             + occupancy_labels_loss
+            + topo_loss
         )
         
         total_mesh_loss.backward()
@@ -571,6 +576,8 @@ if __name__ == "__main__":
     parser.add_argument("--min_occupancy_value", default=1e-10, type=float)
     parser.add_argument("--n_binary_steps_to_reset_sdf", default=8, type=int)
     parser.add_argument("--sdf_reset_linearization_n_steps", default=20, type=int)
+    parser.add_argument("--use_topo_loss", action="store_true", default=False)
+    parser.add_argument('--topo_weight', default=0.1)
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)
     

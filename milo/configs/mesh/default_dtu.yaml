@@ -3,6 +3,12 @@ start_iter: 20_001
 mesh_update_interval: 1 
 stop_iter: 30_000
 
+# Topo loss
+use_topo_loss: false
+topo_weight: 0.1
+topo_start_iter: 25_001
+topo_interval: 25
+
 # Depth loss weight
 use_depth_loss: true
 depth_weight: 0.01  # 0.05

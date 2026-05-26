@@ -305,6 +305,7 @@ def training(
             occupancy_labels_loss = mesh_regularization_pkg["occupancy_labels_loss"]
             mesh_state = mesh_regularization_pkg["updated_state"]
             mesh_render_pkg = mesh_regularization_pkg["mesh_render_pkg"]
+            mesh_topo_loss = mesh_regularization_pkg['topo_loss']
             
             loss = loss + mesh_loss
         
@@ -587,6 +588,9 @@ if __name__ == "__main__":
     parser.add_argument("--log_interval", type=int, default=None)
     parser.add_argument("--wandb_project", type=str, default=None)
     parser.add_argument("--wandb_entity", type=str, default=None)
+
+    parser.add_argument('--use_topo_loss', action="store_true", default=False)
+    parser.add_argument("--topo_weight", type=float, default = 0.1)
     
     args = parser.parse_args(sys.argv[1:])
 
@@ -618,6 +622,12 @@ if __name__ == "__main__":
         with open(mesh_config_file, "r") as f:
             mesh_config = yaml.safe_load(f)
         print(f"[INFO] Using mesh regularization with config: {args.mesh_config}")
+
+        mesh_config["use_topo_loss"] = args.use_topo_loss
+        mesh_config["topo_weight"] = args.topo_weight
+        print(f"          > Topo loss enabled: {mesh_config['use_topo_loss']}")
+        if mesh_config["use_topo_loss"]:
+            print(f"          > Topo weight: {mesh_config['topo_weight']}")   
     else:
         mesh_config = None
     

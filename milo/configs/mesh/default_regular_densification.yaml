@@ -1,7 +1,7 @@
 # Regularization schedule
 start_iter: 20_001
 mesh_update_interval: 1 
-stop_iter: 30_000
+stop_iter: 5
 
 # Depth loss weight
 use_depth_loss: true
