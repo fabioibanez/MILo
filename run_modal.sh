@@ -5,6 +5,8 @@
 #   ./run_modal.sh setup                       # install modal + auth (one-time)
 #   ./run_modal.sh upload <local-scene-dir>    # push a COLMAP scene to the data volume
 #   ./run_modal.sh train  <scene> [extra...]   # train + extract mesh
+#   ./run_modal.sh sweep  <scene> [extra...]   # hyperparameter sweep (stage 1)
+#   ./run_modal.sh eval   <scene> [extra...]   # DTU Chamfer eval on sweep runs (stage 2)
 #   ./run_modal.sh fetch  <scene>              # pull trained outputs back locally
 #   ./run_modal.sh shell                       # drop into an interactive container
 #
@@ -43,6 +45,18 @@ case "$cmd" in
     scene="${1:?usage: ./run_modal.sh train <scene> [--imp-metric ...] [--rasterizer ...] [--extra-args ...]}"
     shift
     modal run "$APP::main" --scene "$scene" "$@"
+    ;;
+
+  sweep)
+    scene="${1:?usage: ./run_modal.sh sweep <scene> [--topo-weight ...] [--no-parallel]}"
+    shift
+    modal run "$APP::sweep" --scene "$scene" "$@"
+    ;;
+
+  eval)
+    scene="${1:?usage: ./run_modal.sh eval <scene> [--run-names a,b] [--no-parallel]}"
+    shift
+    modal run "$APP::eval_sweep" --scene "$scene" "$@"
     ;;
 
   fetch)

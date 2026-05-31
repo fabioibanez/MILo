@@ -8,8 +8,8 @@ topo_n_points: 50_000
 topo_sampling_method: "random"  # or "surface"
 
 use_topo_loss: True
-topo_weight: 0.005
-topo_interval: 50
+topo_weight: 0.001 # originally 0.005
+topo_interval: 10
 topo_start_iter: 10_001
 
 # Depth loss weight
@@ -20,7 +20,7 @@ mesh_depth_loss_type: "log"  # "log"
 
 # Normal loss weight
 use_normal_loss: true  # true
-normal_weight: 0.05  # 0.05
+normal_weight: 0.10  # originally 0.05
 use_depth_normal: true  # true
 
 # Delaunay computation
@@ -28,6 +28,7 @@ delaunay_reset_interval: 500  # 500
 n_max_points_in_delaunay: 540_000  # -1 for no limit
 delaunay_sampling_method: "surface"  # "random", "surface" or "surface+opacity"
 filter_large_edges: true  # true or false?
+# TODO switch this to true
 collapse_large_edges: false  # true or false?
 
 # Rasterization
