@@ -256,10 +256,15 @@ def train_dtu_sweep_cell(
     sampling_factor: float = 1.0,
     use_topo_loss: bool = False,
     topo_weight: float = 0.005,
+    topo_start_iter: int = 0,
+    topo_interval: int = 0,
     mesh_config: str = "lowres",
     train_iteration: int = 18000,
 ) -> dict:
-    """Stage 1: train + extract + proxy metrics for one sweep cell."""
+    """Stage 1: train + extract + proxy metrics for one sweep cell.
+
+    topo_start_iter / topo_interval = 0 means "leave the config default alone".
+    """
     output_dir = f"./output/sweep/{scene}/{run_name}"
     output_path = f"{REMOTE_REPO}/milo/{output_dir.lstrip('./')}"
 
@@ -274,6 +279,10 @@ def train_dtu_sweep_cell(
     )
     if use_topo_loss:
         train_cmd += f" --use_topo_loss --topo_weight {topo_weight}"
+        if topo_start_iter > 0:
+            train_cmd += f" --topo_start_iter {topo_start_iter}"
+        if topo_interval > 0:
+            train_cmd += f" --topo_interval {topo_interval}"
     _run(train_cmd)
 
     # --- Extract mesh from learned SDF ---
@@ -292,6 +301,8 @@ def train_dtu_sweep_cell(
     metrics["sampling_factor"] = sampling_factor
     metrics["use_topo_loss"] = use_topo_loss
     metrics["topo_weight"] = topo_weight if use_topo_loss else 0.0
+    metrics["topo_start_iter"] = topo_start_iter if use_topo_loss else 0
+    metrics["topo_interval"] = topo_interval if use_topo_loss else 0
     metrics["mesh_config"] = mesh_config
     metrics["train_iteration"] = train_iteration
 
@@ -531,6 +542,125 @@ def sweep(
     _save_sweep_results(results_path, results)
     print(f"[sweep] wrote {results_path}")
     _print_summary(results)
+
+
+@app.function(
+    image=image,
+    cpu=2.0,
+    memory=4096,
+    volumes=VOLUMES,
+    timeout=24 * 60 * 60,
+)
+def _topo_sweep_remote(
+    scene: str,
+    weights: list,
+    starts: list,
+    intervals: list,
+    sampling_factor: float,
+    mesh_config: str,
+    parallel: bool,
+) -> None:
+    """Remote orchestrator for the topo sweep — runs entirely on Modal so the
+    laptop can disconnect. Writes sweep_results.json into the milo-outputs volume."""
+    import itertools
+    import json
+    from pathlib import Path
+
+    combos = list(itertools.product(weights, starts, intervals))
+    cells = [
+        dict(
+            scene=scene,
+            run_name=f"tw{tw}_tsi{tsi}_ti{ti}",
+            sampling_factor=sampling_factor,
+            use_topo_loss=True,
+            topo_weight=tw,
+            topo_start_iter=tsi,
+            topo_interval=ti,
+            mesh_config=mesh_config,
+        )
+        for tw, tsi, ti in combos
+    ]
+
+    print(f"[sweep_topo] {len(cells)} cells on scene={scene} mesh_config={mesh_config}")
+    print(f"[sweep_topo] grid: {len(weights)} x {len(starts)} x {len(intervals)}")
+    print(f"[sweep_topo] mode: {'parallel' if parallel else 'sequential'}\n")
+
+    if parallel:
+        handles = [train_dtu_sweep_cell.spawn(**c) for c in cells]
+        results = []
+        for c, h in zip(cells, handles):
+            try:
+                results.append(h.get())
+            except Exception as e:
+                print(f"[sweep_topo] cell {c['run_name']} FAILED: {e}")
+                results.append({**c, "error": str(e)})
+    else:
+        results = []
+        for c in cells:
+            try:
+                results.append(train_dtu_sweep_cell.remote(**c))
+            except Exception as e:
+                print(f"[sweep_topo] cell {c['run_name']} FAILED: {e}")
+                results.append({**c, "error": str(e)})
+
+    # Persist results to the output volume so they survive after detach.
+    out_path = Path(f"{OUTPUT_DIR}/sweep/{scene}/sweep_results.json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump(results, f, indent=2)
+    output_volume.commit()
+    print(f"[sweep_topo] wrote {out_path} to milo-outputs volume")
+    _print_summary(results)
+
+
+@app.local_entrypoint()
+def sweep_topo(
+    scene: str = "scan65",
+    topo_weights: str = "0.001,0.005,0.05",
+    topo_start_iters: str = "15000,18000",
+    topo_intervals: str = "25,100",
+    sampling_factor: float = 1.0,
+    mesh_config: str = "lowres",
+    parallel: bool = True,
+) -> None:
+    """
+    Topo-regularization 3-knob sweep on a single DTU scene.
+
+    Orchestration runs REMOTELY on Modal via .spawn(), so the local CLI exits
+    in seconds and the whole sweep keeps running on Modal even after you close
+    your laptop. No --detach / nohup / tmux needed.
+
+    Usage:
+        modal run modal_app.py::sweep_topo --scene scan65 \\
+            --topo-weights 0.001,0.01,0.1 \\
+            --topo-start-iters 15000,17000 \\
+            --topo-intervals 25,50,100
+
+    Check progress later:
+        modal app list                          # find the running app
+        modal app logs <app-id>                 # tail orchestrator logs
+
+    When it's done, fetch results and run DTU Chamfer eval:
+        modal volume get milo-outputs sweep/{scene}/sweep_results.json ./milo/output/sweep/{scene}/
+        modal run modal_app.py::eval_sweep --scene {scene}
+    """
+    weights = [float(x) for x in topo_weights.split(",") if x.strip()]
+    starts = [int(x) for x in topo_start_iters.split(",") if x.strip()]
+    intervals = [int(x) for x in topo_intervals.split(",") if x.strip()]
+
+    handle = _topo_sweep_remote.spawn(
+        scene=scene,
+        weights=weights,
+        starts=starts,
+        intervals=intervals,
+        sampling_factor=sampling_factor,
+        mesh_config=mesh_config,
+        parallel=parallel,
+    )
+    print(f"[sweep_topo] spawned orchestrator on Modal. FunctionCall id: {handle.object_id}")
+    print(f"[sweep_topo] Safe to close your terminal now. Check progress with:")
+    print(f"             modal app list")
+    print(f"             modal app logs <app-id>")
 
 
 @app.local_entrypoint()

@@ -473,6 +473,8 @@ if __name__ == "__main__":
 
     parser.add_argument('--use_topo_loss', action="store_true", default=False)
     parser.add_argument("--topo_weight", type=float, default = 0.1)
+    parser.add_argument("--topo_start_iter", type=int, default=None)
+    parser.add_argument("--topo_interval", type=int, default=None)
     
     args = parser.parse_args(sys.argv[1:])
 
@@ -505,9 +507,15 @@ if __name__ == "__main__":
         print(f"[INFO] Using mesh regularization with config: {args.mesh_config}")
         mesh_config["use_topo_loss"] = args.use_topo_loss
         mesh_config["topo_weight"] = args.topo_weight
+        if args.topo_start_iter is not None:
+            mesh_config["topo_start_iter"] = args.topo_start_iter
+        if args.topo_interval is not None:
+            mesh_config["topo_interval"] = args.topo_interval
         print(f"          > Topo loss enabled: {mesh_config['use_topo_loss']}")
         if mesh_config["use_topo_loss"]:
             print(f"          > Topo weight: {mesh_config['topo_weight']}")
+            print(f"          > Topo start iter: {mesh_config.get('topo_start_iter')}")
+            print(f"          > Topo interval: {mesh_config.get('topo_interval')}")
 
     else:
         mesh_config = None
