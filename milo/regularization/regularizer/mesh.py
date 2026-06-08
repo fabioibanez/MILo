@@ -466,14 +466,16 @@ def compute_mesh_regularization(
             flatten_voronoi_features(current_occupancy)
         )  # (N_voronoi_points, )
 
-        # TODO(Chris & Fabio): compute regularization loss w.r.t. the sdf and that should flow back to the gaussian
+#---------------------------------------------------------------------
+# our code
+# ---------------------------------------------------------------------
+
         if (
             config.get("use_topo_loss", False)
             and iteration >= config.get("topo_start_iter", config["start_iter"])
             and (iteration % config.get("topo_interval", 50) == 0)
             and mesh_state["cc_loss"] is not None
         ):
-            print('losssss')
             t = time.time()
             topo_loss = config["topo_weight"] * mesh_state["cc_loss"](
                 current_voronoi_sdf[mesh_state["topo_sample_idx"]]
@@ -481,6 +483,11 @@ def compute_mesh_regularization(
             print('forward', time.time()-t, 'loss', topo_loss)
         else:
             topo_loss = torch.zeros(size=(), device=gaussians._xyz.device)
+
+#---------------------------------------------------------------------
+# our code
+# ---------------------------------------------------------------------
+
 
         # --- Marching Tetrahedra ---
         verts_list, scale_list, faces_list, _ = marching_tetrahedra(
