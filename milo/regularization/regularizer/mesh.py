@@ -321,25 +321,26 @@ def compute_mesh_regularization(
                 delaunay_tets = cpp.triangulate(voronoi_points.detach()).cuda().long()
             torch.cuda.empty_cache()
 
+#---------------------------------------------------------------------
+# our code
+# ---------------------------------------------------------------------
+
             if config.get('use_topo_loss', False):
                 K = config.get('topo_n_points', 50000)
                 n_voronoi = voronoi_points.shape[0]
 
-                # Foreground filter
+                # bounding ball for filtering
                 topo_radius_factor = config.get('topo_radius_factor', None)
                 if topo_radius_factor is not None and topo_radius_factor > 0.0:
                     with torch.no_grad():
+                        #find center
                         topo_center = voronoi_points.detach().median(dim=0).values.view(1, 3)
+                        #keep top topo_center% of points
                         distances = (voronoi_points.detach() - topo_center).norm(dim=-1)
-                        keep_fraction = float(min(max(topo_radius_factor, 0.0), 1.0))
-                        topo_radius = float(distances.quantile(keep_fraction))
+                        topo_radius = float(distances.quantile(float(topo_radius_factor)))
                         in_bbox_mask = distances <= topo_radius
                         candidate_idx = torch.where(in_bbox_mask)[0]
-                    if candidate_idx.numel() < 64:
-                        print(f"[WARNING] Topo bbox filter left only {candidate_idx.numel()} candidates...")
-                        candidate_idx = torch.arange(n_voronoi, device='cuda', dtype=torch.long)
-                    else:
-                        print(f"[INFO] Topo bbox filter: {candidate_idx.numel()}/{n_voronoi}...")
+                    print(f"[INFO] Topo bbox filter: {candidate_idx.numel()}/{n_voronoi}...")
                 else:
                     candidate_idx = torch.arange(n_voronoi, device='cuda', dtype=torch.long)
 
@@ -372,6 +373,10 @@ def compute_mesh_regularization(
                 mesh_state['topo_sample_idx'] = topo_sample_idx
                 mesh_state['cc_loss'] = CCLoss(topo_tets, topo_points.shape[0]).cuda()
                 torch.cuda.empty_cache()
+
+#---------------------------------------------------------------------
+# our code
+# ---------------------------------------------------------------------
 
                 # --- Compute SDF values ---
                 # Check if an SDF reset has to be enforced because of a shape mismatch

@@ -48,7 +48,6 @@ class TopLoss3D(nn.Module):
     def __init__(self, tets, n_verts,b0,b1,b2):
         super(TopLoss3D, self).__init__()
         self.pdfn = LevelSetLayer3D(tets,n_verts, sublevel=True)
-        assert b0 > 0, 'there must be at least one connected component in the target'
         self.topfn = PartialSumBarcodeLengths(dim=0, skip=b0)
         self.topfn1 = PartialSumBarcodeLengths(dim=1, skip=b1)
         self.topfn2 = PartialSumBarcodeLengths(dim=2, skip=b2)
@@ -70,11 +69,11 @@ class CCLoss(nn.Module):
         dgminfo = self.pdfn(beta)
         return self.topfn(dgminfo)
     
+    
 class DTU_test(nn.Module):
     def __init__(self, tets, n_verts,b0=1,b1=0):
         super(DTU_test, self).__init__()
         self.pdfn = LevelSetLayer3D(tets,n_verts, maxdim=1,sublevel=True)
-        assert b0 > 0, 'there must be at least one connected component in the target'
         self.topfn = PartialSumBarcodeLengths(dim=0, skip=b0)
         self.topfn1 = PartialSumBarcodeLengths(dim=1, skip=b1)
 
