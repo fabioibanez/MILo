@@ -344,28 +344,15 @@ def compute_mesh_regularization(
                 else:
                     candidate_idx = torch.arange(n_voronoi, device='cuda', dtype=torch.long)
 
-                # Sample K from candidates — runs regardless of which bbox branch
+                # randomly sample k to keep computation small
                 n_candidates = candidate_idx.shape[0]
                 if n_candidates > K:
-                    if config.get('topo_sampling_method', 'random') == 'surface':
-                        k_gauss = max(1, K // 9)
-                        parent_gauss = (candidate_idx // 9).unique()
-                        n_parent = parent_gauss.numel()
-                        if n_parent > k_gauss:
-                            sub = torch.randperm(n_parent, device='cuda')[:k_gauss]
-                            chosen_gauss = parent_gauss[sub]
-                        else:
-                            chosen_gauss = parent_gauss
-                        offsets = torch.arange(9, device='cuda', dtype=torch.long)
-                        topo_sample_idx = (chosen_gauss.view(-1, 1) * 9 + offsets.view(1, -1)).view(-1)
-                        topo_sample_idx, _ = torch.sort(topo_sample_idx)
-                    else:
-                        perm = torch.randperm(n_candidates, device='cuda')[:K]
-                        topo_sample_idx, _ = torch.sort(candidate_idx[perm])
+                    perm = torch.randperm(n_candidates, device='cuda')[:K]
+                    topo_sample_idx, _ = torch.sort(candidate_idx[perm])
                 else:
                     topo_sample_idx, _ = torch.sort(candidate_idx)
 
-                # Build sub-Delaunay and CCLoss — runs regardless of which bbox branch
+                # Build sub-Delaunay with sampled points for loss
                 with torch.no_grad():
                     topo_points = voronoi_points[topo_sample_idx].detach().contiguous()
                     topo_tets = cpp.triangulate(topo_points).cuda().long()
